@@ -7,10 +7,12 @@ import os
 import platform
 import re
 import shutil
+import shlex
 import subprocess
 import sys
 import threading
 import urllib.request
+import urllib.parse
 import uuid
 import zipfile
 from hashlib import md5
@@ -20,6 +22,8 @@ from typing import Callable, Any
 
 MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"
 USER_AGENT = "BlockLauncher/0.2 (Python Minecraft launcher)"
+_DOWNLOAD_LOCKS: dict[str, threading.Lock] = {}
+_DOWNLOAD_LOCKS_GUARD = threading.Lock()
 
 
 def default_root() -> Path:
@@ -54,6 +58,19 @@ def request_json(url: str) -> Any:
 def safe_download(url: str, dest: Path, sha1: str | None = None,
                   sha512: str | None = None,
                   progress: Callable[[int, int], None] | None = None) -> None:
+    # Multiple loader entries can refer to the same Maven artifact. Windows
+    # rejects concurrent writes/replaces of that destination, so serialize
+    # downloads by canonical destination path within this launcher process.
+    key = str(dest.resolve()).casefold()
+    with _DOWNLOAD_LOCKS_GUARD:
+        lock = _DOWNLOAD_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        _safe_download(url, dest, sha1, sha512, progress)
+
+
+def _safe_download(url: str, dest: Path, sha1: str | None = None,
+                   sha512: str | None = None,
+                   progress: Callable[[int, int], None] | None = None) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         valid = True
@@ -64,7 +81,7 @@ def safe_download(url: str, dest: Path, sha1: str | None = None,
         if valid:
             return
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    temp = dest.with_name(dest.name + ".part")
+    temp = dest.with_name(dest.name + "." + uuid.uuid4().hex + ".part")
     digest = hashlib.sha1()
     digest512 = hashlib.sha512() if sha512 else None
     received = 0
@@ -169,6 +186,63 @@ class Minecraft:
         write_json(path, data)
         return data
 
+    def is_installed(self, version_id: str) -> bool:
+        metadata = read_json(self.versions_dir / version_id / f"{version_id}.json", None)
+        if not metadata:
+            return False
+        if (self.versions_dir / version_id / f"{version_id}.jar").exists():
+            return True
+        parent = metadata.get("inheritsFrom")
+        return bool(parent and (self.versions_dir / parent / f"{parent}.jar").exists())
+
+    def install_loader(self, game_version: str, loader: str,
+                       report: Callable[[str], None] = lambda _: None) -> str:
+        """Install latest stable Fabric/Quilt profile and all its launcher libraries."""
+        if loader == "fabric":
+            base = "https://meta.fabricmc.net/v2/versions/loader"
+        elif loader == "quilt":
+            base = "https://meta.quiltmc.org/v3/versions/loader"
+        else:
+            raise ValueError("Dieser Launcher richtet derzeit Fabric und Quilt automatisch ein.")
+        self.install(game_version, report)
+        builds = request_json(f"{base}/{urllib.parse.quote(game_version, safe='')}")
+        build = next((item for item in builds if item.get("loader", {}).get("stable")), builds[0] if builds else None)
+        if not build:
+            raise ValueError(f"{loader.title()} unterstützt Minecraft {game_version} derzeit nicht.")
+        loader_version = build.get("loader", {}).get("version")
+        if not loader_version:
+            raise ValueError("Der Loader-Metadatenserver lieferte keine Loader-Version.")
+        profile_url = f"{base}/{urllib.parse.quote(game_version, safe='')}/{urllib.parse.quote(loader_version, safe='')}/profile/json"
+        profile = request_json(profile_url)
+        profile_id = profile.get("id")
+        if not profile_id or profile.get("inheritsFrom") != game_version:
+            raise ValueError("Ungültiges Loader-Profil: Minecraft-Version stimmt nicht überein.")
+        jobs = []
+        for library in profile.get("libraries", []):
+            artifact = library.get("downloads", {}).get("artifact")
+            if artifact and artifact.get("path") and artifact.get("url"):
+                jobs.append((artifact["url"], self.libraries_dir / artifact["path"], artifact.get("sha1")))
+                continue
+            parts = library.get("name", "").split(":")
+            if len(parts) < 3:
+                continue
+            group, artifact_name, version = parts[:3]
+            classifier = parts[3] if len(parts) > 3 else None
+            extension = "jar"
+            if "@" in version:
+                version, extension = version.rsplit("@", 1)
+            filename = f"{artifact_name}-{version}{('-' + classifier) if classifier else ''}.{extension}"
+            relative = f"{'/'.join(group.split('.'))}/{artifact_name}/{version}/{filename}"
+            repo = library.get("url") or "https://libraries.minecraft.net/"
+            jobs.append((repo.rstrip("/") + "/" + relative, self.libraries_dir / relative, library.get("sha1")))
+        report(f"Lade {loader.title()} {loader_version} Bibliotheken …")
+        self._download_jobs(jobs, report)
+        profile_dir = self.versions_dir / profile_id
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        write_json(profile_dir / f"{profile_id}.json", profile)
+        report(f"{loader.title()}-Profil {profile_id} ist bereit.")
+        return profile_id
+
     def install(self, version_id: str, report: Callable[[str], None] = lambda _: None) -> None:
         metadata = self.version_metadata(version_id)
         version_dir = self.versions_dir / version_id
@@ -240,7 +314,10 @@ class Minecraft:
                game_dir: Path | None = None) -> subprocess.Popen:
         metadata = self.version_metadata(version_id)
         version_dir = self.versions_dir / version_id
-        jar = version_dir / f"{version_id}.jar"
+        parent_id = metadata.get("inheritsFrom")
+        parent = self.version_metadata(parent_id) if parent_id else None
+        base_metadata = parent or metadata
+        jar = (self.versions_dir / parent_id / f"{parent_id}.jar") if parent_id else version_dir / f"{version_id}.jar"
         if not jar.exists():
             raise FileNotFoundError("Diese Version ist noch nicht installiert.")
         java = java_path or shutil.which("java")
@@ -251,10 +328,22 @@ class Minecraft:
         natives_dir = game_dir / "natives"
         natives_dir.mkdir(exist_ok=True)
         classpath = [str(jar)]
-        for lib in metadata.get("libraries", []):
+        libraries = base_metadata.get("libraries", []) + (metadata.get("libraries", []) if parent else [])
+        for lib in libraries:
             if not rule_allowed(lib.get("rules")):
                 continue
             artifact = lib.get("downloads", {}).get("artifact")
+            if not artifact and lib.get("name"):
+                parts = lib["name"].split(":")
+                if len(parts) >= 3:
+                    group, artifact_name, lib_version = parts[:3]
+                    classifier = parts[3] if len(parts) > 3 else None
+                    extension = "jar"
+                    if "@" in lib_version:
+                        lib_version, extension = lib_version.rsplit("@", 1)
+                    filename = f"{artifact_name}-{lib_version}{('-' + classifier) if classifier else ''}.{extension}"
+                    rel = f"{'/'.join(group.split('.'))}/{artifact_name}/{lib_version}/{filename}"
+                    artifact = {"path": rel}
             if artifact:
                 p = self.libraries_dir / artifact["path"]
                 if p.exists():
@@ -271,12 +360,12 @@ class Minecraft:
                                 if member.endswith("/") or member.upper().startswith("META-INF/"):
                                     continue
                                 zf.extract(member, natives_dir)
-        version_info = metadata.get("javaVersion", {}).get("majorVersion", 8)
-        assets = metadata.get("assets", "legacy")
+        version_info = base_metadata.get("javaVersion", {}).get("majorVersion", 8)
+        assets = base_metadata.get("assets", "legacy")
         uid = offline_uuid(username)
         values = {
             "auth_player_name": username, "version_name": version_id, "game_directory": str(game_dir),
-            "assets_root": str(self.assets_dir), "assets_index_name": metadata.get("assetIndex", {}).get("id", assets),
+            "assets_root": str(self.assets_dir), "assets_index_name": base_metadata.get("assetIndex", {}).get("id", assets),
             "auth_uuid": uid.replace("-", ""), "auth_access_token": "0", "clientid": "0", "auth_xuid": "0",
             "user_type": "legacy", "version_type": metadata.get("type", "release"),
             "natives_directory": str(natives_dir), "launcher_name": "BlockLauncher",
@@ -294,9 +383,21 @@ class Minecraft:
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("Die Java-Version konnte nicht geprüft werden (Zeitüberschreitung).") from exc
         cmd = [java, "-Xms512M", f"-Xmx{max(1, int(ram_gb))}G"]
-        cmd += self._expand_args(metadata.get("arguments", {}).get("jvm", ["-Djava.library.path=${natives_directory}", "-cp", "${classpath}"]), values)
+        default_jvm = ["-Djava.library.path=${natives_directory}", "-cp", "${classpath}"]
+        if parent:
+            jvm_args = parent.get("arguments", {}).get("jvm") or default_jvm
+            jvm_args = jvm_args + metadata.get("arguments", {}).get("jvm", [])
+        else:
+            jvm_args = metadata.get("arguments", {}).get("jvm") or default_jvm
+        cmd += self._expand_args(jvm_args, values)
         cmd.append(metadata["mainClass"])
-        if "arguments" in metadata:
+        if parent:
+            game_args = parent.get("arguments", {}).get("game")
+            if game_args is None:
+                game_args = shlex.split(parent.get("minecraftArguments", ""))
+            game_args += metadata.get("arguments", {}).get("game", [])
+            cmd += self._expand_args(game_args, values)
+        elif "arguments" in metadata:
             cmd += self._expand_args(metadata["arguments"].get("game", []), values)
         else:
             cmd += ["--username", username, "--version", version_id, "--gameDir", str(game_dir),

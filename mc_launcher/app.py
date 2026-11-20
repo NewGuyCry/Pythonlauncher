@@ -4,9 +4,14 @@ import logging
 import os
 import re
 import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+except ImportError:  # The browser UI does not require a Tcl/Tk installation.
+    tk = None
+    filedialog = messagebox = ttk = None
 
 from .core import Minecraft, Profiles, available_ram_gb, default_root, discover_java, read_json, write_json
 from .modrinth import install_mod, search_mods
@@ -27,7 +32,7 @@ class LauncherApp:
         self.config_path = Path.home() / ".block-launcher" / "settings.json"
         self.config = read_json(self.config_path, {})
         self.mc_root = Path(self.config.get("minecraft_dir") or default_root())
-        self.mc = Minecraft(self.mc_root, int(self.config.get("parallel_downloads", 8)))
+        self.mc = Minecraft(self.mc_root, int(self.config.get("parallel_downloads", 16)))
         self.profiles = Profiles(self.mc_root)
         self.manifest = {"versions": []}
         self.proc = None
@@ -260,11 +265,11 @@ class LauncherApp:
         search_entry.bind("<Return>", lambda _: self.search_modrinth())
         self.mods_version = ttk.Combobox(filters, state="readonly", width=14)
         self.mods_version.pack(side="left", padx=5)
-        self.mods_loader = ttk.Combobox(filters, state="readonly", width=14, values=("fabric", "forge", "neoforge", "quilt"))
+        self.mods_loader = ttk.Combobox(filters, state="readonly", width=14, values=("fabric", "quilt"))
         self.mods_loader.set("fabric")
         self.mods_loader.pack(side="left", padx=5)
         ttk.Button(filters, text="Suchen", style="Accent.TButton", command=self.search_modrinth).pack(side="left", padx=(5, 0))
-        ttk.Label(search_panel, text="Wähle die Minecraft-Version und den Modloader, der bereits in deiner Installation eingerichtet ist.", style="PanelMuted.TLabel", wraplength=780).pack(anchor="w", pady=(10, 0))
+        ttk.Label(search_panel, text="Der Launcher richtet Fabric oder Quilt automatisch ein und startet die passende Mod-Installation.", style="PanelMuted.TLabel", wraplength=780).pack(anchor="w", pady=(10, 0))
         results_panel = self.panel()
         results_panel.pack(fill="both", expand=True, pady=(0, 14))
         ttk.Label(results_panel, text="Suchergebnisse", style="Hero.TLabel").pack(anchor="w", pady=(0, 10))
@@ -342,21 +347,27 @@ class LauncherApp:
         if not project:
             return
         version, loader = self.mods_version.get(), self.mods_loader.get()
-        mods_dir = self.mc_root / "instances" / version / "mods"
         self.mod_search_status.set(f"Installiere {project.get('title', 'Mod')} samt erforderlichen Abhängigkeiten …")
         def work():
             try:
+                profile_id = self.mc.install_loader(version, loader,
+                    lambda msg: self.window.after(0, lambda: self.mod_search_status.set(msg)))
+                mods_dir = self.mc_root / "instances" / profile_id / "mods"
                 names = install_mod(project["project_id"], version, loader, mods_dir,
                                     lambda msg: self.window.after(0, lambda: self.mod_search_status.set(msg)))
-                self.window.after(0, lambda: self._modrinth_installed(names))
+                self.window.after(0, lambda: self._modrinth_installed(names, profile_id))
             except Exception as exc:
                 self.window.after(0, lambda error=str(exc): self.mod_search_status.set(f"Installation fehlgeschlagen: {error}"))
         threading.Thread(target=work, daemon=True).start()
 
-    def _modrinth_installed(self, names):
+    def _modrinth_installed(self, names, profile_id):
+        self.selected_version = profile_id
+        self.config["version"] = profile_id
+        self._save_config()
+        self._refresh_home_choices()
         self.refresh_mods()
         self.mod_search_status.set(f"Installiert: {', '.join(names)}" if names else "Mod und erforderliche Abhängigkeiten sind bereits installiert.")
-        self.status_var.set("Modrinth-Installation abgeschlossen")
+        self.status_var.set(f"Mod installiert. Starte {profile_id} auf der Startseite.")
 
     def page_modpacks(self):
         self.heading("Modpacks", "Importiere Modrinth .mrpack-Dateien in getrennte Instanzen.")
@@ -406,7 +417,7 @@ class LauncherApp:
         for version in self.manifest.get("versions", []):
             if q and q not in version["id"].lower() and q not in version["type"].lower():
                 continue
-            installed = (self.mc_root / "versions" / version["id"] / f"{version['id']}.jar").exists()
+            installed = self.mc.is_installed(version["id"])
             self.versions_tree.insert("", "end", iid=version["id"], values=(version["id"], version["type"], version.get("releaseTime", "")[:10], "Installiert" if installed else "Nicht installiert"))
         if not self.versions_tree.get_children():
             self.versions_status.set("Keine passenden Versionen.")
@@ -423,6 +434,12 @@ class LauncherApp:
         versions = self.manifest.get("versions", [])
         latest = self.manifest.get("latest", {})
         ids = [v["id"] for v in versions]
+        if self.mc.versions_dir.exists():
+            for profile_file in self.mc.versions_dir.glob("*/*.json"):
+                profile = read_json(profile_file, {})
+                profile_id = profile.get("id")
+                if profile.get("inheritsFrom") and profile_id == profile_file.parent.name and self.mc.is_installed(profile_id) and profile_id not in ids:
+                    ids.append(profile_id)
         choices = [f"latest release ({latest.get('release', '…')})", f"latest snapshot ({latest.get('snapshot', '…')})"] + ids
         self.home_version["values"] = choices
         if self.selected_version in choices:
@@ -431,7 +448,7 @@ class LauncherApp:
             self.home_version.set(choices[0] if choices else "")
         self.home_profile["values"] = [p["name"] for p in self.profiles.all()]
         self.home_profile.set(self.selected_profile)
-        self._actual_version(self.home_version.get(), lambda actual: self.home_status.configure(text=f"Ausgewählt: {actual} • {'Installiert' if (self.mc_root / 'versions' / actual / f'{actual}.jar').exists() else 'Noch nicht installiert'}") if self.home_status.winfo_exists() else None)
+        self._actual_version(self.home_version.get(), lambda actual: self.home_status.configure(text=f"Ausgewählt: {actual} • {'Installiert' if self.mc.is_installed(actual) else 'Noch nicht installiert'}") if self.home_status.winfo_exists() else None)
 
     def _actual_version(self, value, callback):
         if value.startswith("latest release"):
@@ -458,7 +475,7 @@ class LauncherApp:
         if not version_id:
             messagebox.showerror("Version fehlt", "Die Versionsliste wird noch geladen.")
             return
-        if not (self.mc_root / "versions" / version_id / f"{version_id}.jar").exists():
+        if not self.mc.is_installed(version_id):
             if messagebox.askyesno("Installation erforderlich", f"Minecraft {version_id} ist noch nicht installiert. Jetzt installieren?"):
                 self._run_background(lambda: self.mc.install(version_id, self._set_status), "Installation abgeschlossen. Du kannst jetzt auf Spielen klicken.")
             return
@@ -543,14 +560,14 @@ class LauncherApp:
 
     def refresh_mods(self):
         self.mods_list.delete(0, "end")
-        path = self.mc_root / "instances" / self.mods_version.get() / "mods"
+        path = self._mods_directory(self.mods_version.get())
         path.mkdir(parents=True, exist_ok=True)
         for mod in sorted(path.glob("*.jar")):
             self.mods_list.insert("end", mod.name)
 
     def add_mod(self):
         files = filedialog.askopenfilenames(title="Mod-JARs auswählen", filetypes=[("Java Archive", "*.jar")])
-        dest = self.mc_root / "instances" / self.mods_version.get() / "mods"
+        dest = self._mods_directory(self.mods_version.get())
         dest.mkdir(parents=True, exist_ok=True)
         for file in files:
             source = Path(file)
@@ -564,8 +581,16 @@ class LauncherApp:
         sel = self.mods_list.curselection()
         if sel:
             name = self.mods_list.get(sel[0])
-            (self.mc_root / "instances" / self.mods_version.get() / "mods" / name).unlink(missing_ok=True)
+            (self._mods_directory(self.mods_version.get()) / name).unlink(missing_ok=True)
             self.refresh_mods()
+
+    def _mods_directory(self, game_version: str) -> Path:
+        selected = self.selected_version
+        if selected and selected not in ("latest release", "latest snapshot"):
+            profile = read_json(self.mc.versions_dir / selected / f"{selected}.json", {})
+            if profile.get("inheritsFrom") == game_version:
+                return self.mc_root / "instances" / selected / "mods"
+        return self.mc_root / "instances" / game_version / "mods"
 
     def import_pack(self):
         archive = filedialog.askopenfilename(filetypes=[("Modrinth Modpack", "*.mrpack"), ("ZIP", "*.zip")])
@@ -698,12 +723,9 @@ def main():
                             format="%(asctime)s %(levelname)s %(message)s")
     except OSError:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    try:
-        root = tk.Tk()
-        LauncherApp(root)
-        root.mainloop()
-    except tk.TclError as exc:
-        logging.warning("Tkinter runtime unavailable; starting browser UI: %s", exc)
-        from .webui import run_webui
-        run_webui()
+    # Use the responsive web interface as the desktop UI on every platform.
+    # This avoids falling back to a cramped native Tk layout on systems where
+    # Tcl/Tk exists but its widgets render differently or the runtime is partial.
+    from .webui import run_webui
+    run_webui()
 
