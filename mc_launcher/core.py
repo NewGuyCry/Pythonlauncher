@@ -13,6 +13,7 @@ import threading
 import urllib.request
 import uuid
 import zipfile
+from hashlib import md5
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Any
@@ -97,6 +98,10 @@ def rule_allowed(rules: list[dict] | None) -> bool:
     allowed = False
     for rule in rules:
         os_rule = rule.get("os", {})
+        # We do not advertise launcher-only features (demo mode, custom resolution,
+        # quick-play capability) unless the UI explicitly implements them.
+        if any(bool(value) for value in rule.get("features", {}).values()):
+            continue
         if os_rule.get("name") and os_rule["name"] != os_name():
             continue
         if os_rule.get("arch") and os_rule["arch"] not in platform.machine().lower():
@@ -106,7 +111,10 @@ def rule_allowed(rules: list[dict] | None) -> bool:
 
 
 def offline_uuid(username: str) -> str:
-    return str(uuid.uuid3(uuid.NAMESPACE_DNS, "OfflinePlayer:" + username))
+    raw = bytearray(md5(("OfflinePlayer:" + username).encode("utf-8")).digest())
+    raw[6] = (raw[6] & 0x0F) | 0x30
+    raw[8] = (raw[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(raw)))
 
 
 class Minecraft:
@@ -160,7 +168,6 @@ class Minecraft:
             artifact = downloads_data.get("artifact")
             if artifact:
                 jobs.append((artifact["url"], self.libraries_dir / artifact["path"], artifact.get("sha1")))
-            native_key = f"natives-{os_name()}"
             classifier = lib.get("natives", {}).get(os_name())
             if classifier:
                 classifier = classifier.replace("${arch}", "64" if platform.machine().endswith("64") else "32")
@@ -258,21 +265,23 @@ class Minecraft:
             "resolution_width": "1280", "resolution_height": "720", "quickPlayPath": "",
             "quickPlaySingleplayer": "", "quickPlayMultiplayer": "", "quickPlayRealms": "",
         }
-        cmd = [java, f"-Xms512M", f"-Xmx{max(1, int(ram_gb))}G"]
-        cmd += metadata.get("arguments", {}).get("jvm", ["-Djava.library.path=${natives_directory}", "-cp", "${classpath}"])
-        cmd = self._expand_args(cmd, values)
+        try:
+            version_result = subprocess.run([java, "-version"], capture_output=True, text=True, timeout=10)
+            version_text = version_result.stderr + version_result.stdout
+            match = re.search(r'"(?:1\.)?(\d+)', version_text)
+            if match and int(match.group(1)) < version_info:
+                raise RuntimeError(f"Minecraft {version_id} benötigt Java {version_info} oder neuer; gefunden: Java {match.group(1)}.")
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Die Java-Version konnte nicht geprüft werden (Zeitüberschreitung).") from exc
+        cmd = [java, "-Xms512M", f"-Xmx{max(1, int(ram_gb))}G"]
+        cmd += self._expand_args(metadata.get("arguments", {}).get("jvm", ["-Djava.library.path=${natives_directory}", "-cp", "${classpath}"]), values)
+        cmd.append(metadata["mainClass"])
         if "arguments" in metadata:
-            game_args = metadata["arguments"].get("game", [])
-            cmd += self._expand_args(game_args, values)
+            cmd += self._expand_args(metadata["arguments"].get("game", []), values)
         else:
             cmd += ["--username", username, "--version", version_id, "--gameDir", str(game_dir),
                     "--assetsDir", str(self.assets_dir), "--assetIndex", values["assets_index_name"],
                     "--uuid", uid.replace("-", ""), "--accessToken", "0", "--userType", "legacy"]
-        cmd.append(metadata["mainClass"])
-        # Mojang's JVM args place mainClass after JVM flags and game args follow it.
-        if "arguments" in metadata:
-            # Modern metadata has the main class before game arguments.
-            cmd = cmd[:-1] + [metadata["mainClass"]] + self._expand_args(metadata["arguments"].get("game", []), values)
         log_path = self.root / "logs" / "latest-game.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("ab") as out:
@@ -284,7 +293,8 @@ class Minecraft:
         for item in args:
             if isinstance(item, dict):
                 if rule_allowed(item.get("rules")):
-                    result.extend(Minecraft._expand_args(item.get("value", []), values))
+                    value = item.get("value", [])
+                    result.extend(Minecraft._expand_args(value if isinstance(value, list) else [value], values))
             else:
                 result.append(re.sub(r"\$\{([^}]+)}", lambda m: values.get(m.group(1), m.group(0)), str(item)))
         return result
@@ -315,3 +325,26 @@ def discover_java() -> list[tuple[str, str]]:
     for path, source in candidates:
         unique[path] = source
     return list(unique.items())
+
+
+def available_ram_gb() -> int | None:
+    try:
+        if os.name == "nt":
+            import ctypes
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            status = MemoryStatus()
+            status.dwLength = ctypes.sizeof(status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return max(1, int(status.ullTotalPhys / (1024 ** 3)))
+        else:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            pages = os.sysconf("SC_PHYS_PAGES")
+            return max(1, int(page_size * pages / (1024 ** 3)))
+    except (AttributeError, OSError, ValueError):
+        pass
+    return None
