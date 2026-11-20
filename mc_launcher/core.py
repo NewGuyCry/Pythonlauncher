@@ -19,12 +19,12 @@ from pathlib import Path
 from typing import Callable, Any
 
 MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"
-USER_AGENT = "BlockLauncher/0.1 (Python Minecraft launcher)"
+USER_AGENT = "BlockLauncher/0.2 (Python Minecraft launcher)"
 
 
 def default_root() -> Path:
     if sys.platform == "win32":
-        return Path(os.environ.get("APPDATA", Path.home())) / ".minecraft"
+        return Path(os.environ.get("APPDATA", Path.home())) / ".minecraft" / "PythonLauncher"
     if sys.platform == "darwin":
         return Path.home() / "Library/Application Support/minecraft"
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "minecraft"
@@ -52,13 +52,21 @@ def request_json(url: str) -> Any:
 
 
 def safe_download(url: str, dest: Path, sha1: str | None = None,
+                  sha512: str | None = None,
                   progress: Callable[[int, int], None] | None = None) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists() and (not sha1 or file_sha1(dest) == sha1):
-        return
+    if dest.exists():
+        valid = True
+        if sha1:
+            valid = file_sha1(dest).lower() == sha1.lower()
+        if sha512:
+            valid = valid and file_sha512(dest).lower() == sha512.lower()
+        if valid:
+            return
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     temp = dest.with_name(dest.name + ".part")
     digest = hashlib.sha1()
+    digest512 = hashlib.sha512() if sha512 else None
     received = 0
     try:
         with urllib.request.urlopen(req, timeout=60) as response, temp.open("wb") as out:
@@ -69,11 +77,15 @@ def safe_download(url: str, dest: Path, sha1: str | None = None,
                     break
                 out.write(chunk)
                 digest.update(chunk)
+                if digest512:
+                    digest512.update(chunk)
                 received += len(chunk)
                 if progress:
                     progress(received, total)
         if sha1 and digest.hexdigest().lower() != sha1.lower():
             raise ValueError(f"SHA-1-Prüfung fehlgeschlagen: {dest.name}")
+        if sha512 and digest512.hexdigest().lower() != sha512.lower():
+            raise ValueError(f"SHA-512-Prüfung fehlgeschlagen: {dest.name}")
         temp.replace(dest)
     except Exception:
         temp.unlink(missing_ok=True)
@@ -82,6 +94,14 @@ def safe_download(url: str, dest: Path, sha1: str | None = None,
 
 def file_sha1(path: Path) -> str:
     digest = hashlib.sha1()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def file_sha512(path: Path) -> str:
+    digest = hashlib.sha512()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             digest.update(chunk)

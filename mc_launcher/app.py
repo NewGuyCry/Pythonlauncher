@@ -9,6 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 
 from .core import Minecraft, Profiles, available_ram_gb, default_root, discover_java, read_json, write_json
+from .modrinth import install_mod, search_mods
 from .packs import export_modrinth_pack, import_modrinth_pack
 
 BG = "#11151b"
@@ -33,7 +34,7 @@ class LauncherApp:
         self.current_page = "Home"
         self.window.title("Block Launcher")
         self.window.geometry("1120x740")
-        self.window.minsize(900, 600)
+        self.window.minsize(760, 540)
         self.window.configure(bg=BG)
         self._style()
         self._load_saved()
@@ -56,29 +57,68 @@ class LauncherApp:
         style.configure("Accent.TButton", background=ACCENT, foreground="#0b1a11", padding=(20, 12), font=("Segoe UI", 11, "bold"))
         style.map("Accent.TButton", background=[("active", "#58c988")])
         style.configure("TCombobox", fieldbackground=PANEL2, background=PANEL2, foreground=TEXT, arrowcolor=TEXT)
-        style.configure("Treeview", background=PANEL, fieldbackground=PANEL, foreground=TEXT, rowheight=28, borderwidth=0)
-        style.configure("Treeview.Heading", background=PANEL2, foreground=TEXT, font=("Segoe UI", 9, "bold"))
+        style.configure("TEntry", fieldbackground=PANEL2, foreground=TEXT, insertcolor=TEXT, padding=8)
+        style.configure("TScrollbar", background=PANEL2, troughcolor=BG, arrowcolor=MUTED, borderwidth=0)
+        style.configure("Treeview", background=PANEL, fieldbackground=PANEL, foreground=TEXT, rowheight=34, borderwidth=0, font=("Segoe UI", 10))
+        style.configure("Treeview.Heading", background=PANEL2, foreground=TEXT, font=("Segoe UI", 9, "bold"), padding=(8, 9))
         style.map("Treeview", background=[("selected", "#276643")])
 
     def _layout(self):
-        self.nav = tk.Frame(self.window, bg="#0c1015", width=205)
+        self.nav = tk.Frame(self.window, bg="#0c1015", width=190)
         self.nav.pack(side="left", fill="y")
         self.nav.pack_propagate(False)
-        tk.Label(self.nav, text="⬢  BLOCK", bg="#0c1015", fg=GREEN, font=("Segoe UI", 16, "bold")).pack(anchor="w", padx=22, pady=(25, 4))
-        tk.Label(self.nav, text="MINECRAFT JAVA", bg="#0c1015", fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=25, pady=(0, 22))
+        self.brand = tk.Label(self.nav, text="⬢  BLOCK", bg="#0c1015", fg=GREEN, font=("Segoe UI", 16, "bold"))
+        self.brand.pack(anchor="w", padx=18, pady=(25, 4))
+        self.nav_subtitle = tk.Label(self.nav, text="MINECRAFT JAVA", bg="#0c1015", fg=MUTED, font=("Segoe UI", 8, "bold"))
+        self.nav_subtitle.pack(anchor="w", padx=20, pady=(0, 22))
         self.nav_buttons = {}
+        self.nav_labels = {"Home": "⌂  Home", "Versions": "◷  Versionen", "Mods": "✦  Mods", "Modpacks": "▣  Modpacks", "Accounts": "♙  Profile", "Settings": "⚙  Einstellungen"}
         for page in ["Home", "Versions", "Mods", "Modpacks", "Accounts", "Settings"]:
-            button = tk.Button(self.nav, text=page, anchor="w", padx=20, pady=11, bd=0, cursor="hand2",
+            button = tk.Button(self.nav, text=self.nav_labels[page], anchor="w", padx=15, pady=11, bd=0, cursor="hand2",
                                bg="#0c1015", fg=MUTED, activebackground=PANEL, activeforeground=TEXT,
                                font=("Segoe UI", 10), command=lambda p=page: self.show_page(p))
             button.pack(fill="x", padx=9, pady=2)
             self.nav_buttons[page] = button
-        tk.Label(self.nav, text="Vanilla • Java Edition", bg="#0c1015", fg=MUTED, font=("Segoe UI", 8)).pack(side="bottom", anchor="w", padx=20, pady=18)
-        self.content = tk.Frame(self.window, bg=BG)
-        self.content.pack(side="left", fill="both", expand=True, padx=30, pady=24)
+        self.nav_footer = tk.Label(self.nav, text="Vanilla • Java Edition", bg="#0c1015", fg=MUTED, font=("Segoe UI", 8))
+        self.nav_footer.pack(side="bottom", anchor="w", padx=16, pady=18)
+        self.main_area = tk.Frame(self.window, bg=BG)
+        self.main_area.pack(side="left", fill="both", expand=True)
+        self.content_canvas = tk.Canvas(self.main_area, bg=BG, highlightthickness=0)
+        self.content_scroll = ttk.Scrollbar(self.main_area, orient="vertical", command=self.content_canvas.yview)
+        self.content_canvas.configure(yscrollcommand=self.content_scroll.set)
+        self.content_canvas.pack(side="left", fill="both", expand=True)
+        self.content_scroll.pack(side="right", fill="y")
+        self.content = tk.Frame(self.content_canvas, bg=BG)
+        self.content_window = self.content_canvas.create_window((0, 0), window=self.content, anchor="nw")
+        self.content.bind("<Configure>", lambda _: self.content_canvas.configure(scrollregion=self.content_canvas.bbox("all")))
+        self.content_canvas.bind("<Configure>", lambda e: self.content_canvas.itemconfigure(self.content_window, width=e.width))
+        self.content_canvas.bind_all("<MouseWheel>", self._scroll_content)
+        self.window.bind("<Configure>", self._responsive_layout)
         self.status_var = tk.StringVar(value="Bereit")
-        tk.Label(self.window, textvariable=self.status_var, anchor="w", bg="#0c1015", fg=MUTED, padx=215, pady=7, font=("Segoe UI", 8)).pack(side="bottom", fill="x")
+        tk.Label(self.window, textvariable=self.status_var, anchor="w", bg="#0c1015", fg=MUTED, padx=14, pady=8, font=("Segoe UI", 9)).pack(side="bottom", fill="x")
         self.show_page("Home")
+
+    def _scroll_content(self, event):
+        if self.content_canvas.winfo_exists():
+            self.content_canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    def _responsive_layout(self, event):
+        if event.widget is not self.window:
+            return
+        compact = event.width < 960
+        self.nav.configure(width=72 if compact else 190)
+        if compact:
+            self.brand.configure(text="⬢", padx=0)
+            self.nav_subtitle.pack_forget()
+            self.nav_footer.pack_forget()
+            for page, button in self.nav_buttons.items():
+                button.configure(text=self.nav_labels[page].split("  ")[0], anchor="center", padx=2)
+        else:
+            self.brand.configure(text="⬢  BLOCK", padx=0)
+            self.nav_subtitle.pack(anchor="w", padx=20, pady=(0, 22), before=next(iter(self.nav_buttons.values())))
+            self.nav_footer.pack(side="bottom", anchor="w", padx=16, pady=18)
+            for page, button in self.nav_buttons.items():
+                button.configure(text=self.nav_labels[page], anchor="w", padx=15)
 
     def _load_saved(self):
         profs = self.profiles.all()
@@ -151,6 +191,7 @@ class LauncherApp:
             self.versions_tree.column(col, width=width)
         self.versions_tree.heading("#0", text="VERSION") if "#0" in self.versions_tree["columns"] else None
         self.versions_tree.pack(fill="both", expand=True)
+        self.versions_tree.bind("<Configure>", self._resize_versions_columns)
         self.versions_tree.bind("<Double-1>", lambda _: self.install_selected())
         controls = ttk.Frame(self.content)
         controls.pack(fill="x", pady=14)
@@ -159,6 +200,11 @@ class LauncherApp:
         self.versions_status = tk.StringVar(value="Lade Manifest …")
         ttk.Label(self.content, textvariable=self.versions_status, style="Muted.TLabel").pack(anchor="w")
         self._filter_versions()
+
+    def _resize_versions_columns(self, event):
+        width = max(360, event.width - 24)
+        for column, fraction, minimum in (("version", .35, 100), ("type", .16, 70), ("release", .21, 75), ("status", .28, 85)):
+            self.versions_tree.column(column, width=max(minimum, int(width * fraction)), minwidth=minimum, stretch=True)
 
     def page_accounts(self):
         self.heading("Spielerprofile", "Offline-Profile funktionieren lokal und auf Servern mit deaktivierter Online-Authentifizierung.")
@@ -202,17 +248,115 @@ class LauncherApp:
         ttk.Label(java, text="\n".join(f"{p}  ({src})" for p, src in found) if found else "Java wurde nicht im PATH gefunden.", style="PanelMuted.TLabel", wraplength=700).pack(anchor="w")
 
     def page_mods(self):
-        self.heading("Mods", "Mod-Dateien pro Installation verwalten. Vanilla und Fabric-Mods werden als JAR-Dateien unterstützt.")
-        bar = ttk.Frame(self.content)
-        bar.pack(fill="x", pady=(0, 12))
-        self.mods_version = ttk.Combobox(bar, state="readonly", width=28)
-        self.mods_version.pack(side="left")
+        self.heading("Mods", "Suche Mods auf Modrinth und installiere eine kompatible Version mit einem Klick.")
+        search_panel = self.panel()
+        search_panel.pack(fill="x", pady=(0, 14))
+        ttk.Label(search_panel, text="Modrinth-Suche", style="Hero.TLabel").pack(anchor="w", pady=(0, 10))
+        filters = ttk.Frame(search_panel, style="Panel.TFrame")
+        filters.pack(fill="x")
+        self.mod_query = tk.StringVar()
+        search_entry = ttk.Entry(filters, textvariable=self.mod_query)
+        search_entry.pack(side="left", fill="x", expand=True, padx=(0, 8), ipady=3)
+        search_entry.bind("<Return>", lambda _: self.search_modrinth())
+        self.mods_version = ttk.Combobox(filters, state="readonly", width=14)
+        self.mods_version.pack(side="left", padx=5)
+        self.mods_loader = ttk.Combobox(filters, state="readonly", width=14, values=("fabric", "forge", "neoforge", "quilt"))
+        self.mods_loader.set("fabric")
+        self.mods_loader.pack(side="left", padx=5)
+        ttk.Button(filters, text="Suchen", style="Accent.TButton", command=self.search_modrinth).pack(side="left", padx=(5, 0))
+        ttk.Label(search_panel, text="Wähle die Minecraft-Version und den Modloader, der bereits in deiner Installation eingerichtet ist.", style="PanelMuted.TLabel", wraplength=780).pack(anchor="w", pady=(10, 0))
+        results_panel = self.panel()
+        results_panel.pack(fill="both", expand=True, pady=(0, 14))
+        ttk.Label(results_panel, text="Suchergebnisse", style="Hero.TLabel").pack(anchor="w", pady=(0, 10))
+        self.mod_results = ttk.Treeview(results_panel, columns=("title", "author", "downloads", "summary"), show="headings", selectmode="browse")
+        for col, title in (("title", "MOD"), ("author", "AUTOR"), ("downloads", "DOWNLOADS"), ("summary", "BESCHREIBUNG")):
+            self.mod_results.heading(col, text=title)
+        self.mod_results.column("title", width=180, minwidth=110, stretch=True)
+        self.mod_results.column("author", width=110, minwidth=80, stretch=True)
+        self.mod_results.column("downloads", width=90, minwidth=75, stretch=False, anchor="e")
+        self.mod_results.column("summary", width=300, minwidth=140, stretch=True)
+        self.mod_results.pack(fill="both", expand=True)
+        self.mod_results.bind("<Double-1>", lambda _: self.install_modrinth_selected())
+        actions = ttk.Frame(results_panel, style="Panel.TFrame")
+        actions.pack(fill="x", pady=(10, 0))
+        ttk.Button(actions, text="⬇  Mit einem Klick installieren", style="Accent.TButton", command=self.install_modrinth_selected).pack(side="left")
+        self.mod_search_status = tk.StringVar(value="Gib einen Modnamen ein und starte die Suche.")
+        ttk.Label(actions, textvariable=self.mod_search_status, style="PanelMuted.TLabel", wraplength=480).pack(side="left", padx=12)
+        local = self.panel()
+        local.pack(fill="x")
+        ttk.Label(local, text="Lokale Mods", style="Hero.TLabel").pack(anchor="w", pady=(0, 8))
+        localbar = ttk.Frame(local, style="Panel.TFrame")
+        localbar.pack(fill="x")
+        ttk.Button(localbar, text="JAR hinzufügen", command=self.add_mod).pack(side="left")
+        ttk.Button(localbar, text="Ausgewählte entfernen", command=self.remove_mod).pack(side="left", padx=8)
+        self.mods_list = tk.Listbox(local, bg=PANEL2, fg=TEXT, selectbackground="#276643", relief="flat", font=("Segoe UI", 10), height=5)
+        self.mods_list.pack(fill="x", pady=(10, 0))
+        self._modrinth_projects = {}
+        self.mods_version["values"] = [v["id"] for v in self.manifest.get("versions", [])]
+        version = self._selected_version_id()
+        if version and version in self.mods_version["values"]:
+            self.mods_version.set(version)
+        elif self.mods_version["values"]:
+            self.mods_version.set(self.mods_version["values"][0])
         self.mods_version.bind("<<ComboboxSelected>>", lambda _: self.refresh_mods())
-        ttk.Button(bar, text="JAR hinzufügen", command=self.add_mod).pack(side="left", padx=8)
-        ttk.Button(bar, text="Entfernen", command=self.remove_mod).pack(side="left")
-        self.mods_list = tk.Listbox(self.content, bg=PANEL, fg=TEXT, selectbackground="#276643", relief="flat", font=("Segoe UI", 10))
-        self.mods_list.pack(fill="both", expand=True)
         self._refresh_mod_versions()
+
+    def search_modrinth(self):
+        query = self.mod_query.get().strip()
+        game_version = self.mods_version.get()
+        loader = self.mods_loader.get()
+        if not query or not game_version or not loader:
+            self.mod_search_status.set("Suche, Minecraft-Version und Loader auswählen.")
+            return
+        self.mod_search_status.set("Suche auf Modrinth läuft …")
+        self.mod_results.delete(*self.mod_results.get_children())
+        def work():
+            try:
+                results = search_mods(query, game_version, loader)
+                self.window.after(0, lambda: self._show_modrinth_results(results))
+            except Exception as exc:
+                self.window.after(0, lambda error=str(exc): self.mod_search_status.set(f"Suche fehlgeschlagen: {error}"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_modrinth_results(self, results):
+        if not hasattr(self, "mod_results") or not self.mod_results.winfo_exists():
+            return
+        self._modrinth_projects = {}
+        for project in results:
+            pid = project.get("project_id")
+            if not pid:
+                continue
+            title = project.get("title", "Unbekannter Mod")
+            self._modrinth_projects[pid] = project
+            self.mod_results.insert("", "end", iid=pid, values=(title, project.get("author", ""), f"{project.get('downloads', 0):,}", project.get("description", "")))
+        self.mod_search_status.set(f"{len(self._modrinth_projects)} passende Mods gefunden. Doppelklick oder Button installiert den gewählten Mod.")
+
+    def install_modrinth_selected(self):
+        if not hasattr(self, "mod_results") or not self.mod_results.winfo_exists():
+            return
+        selection = self.mod_results.selection()
+        if not selection:
+            self.mod_search_status.set("Wähle zuerst einen Mod aus der Ergebnisliste.")
+            return
+        project = self._modrinth_projects.get(selection[0])
+        if not project:
+            return
+        version, loader = self.mods_version.get(), self.mods_loader.get()
+        mods_dir = self.mc_root / "instances" / version / "mods"
+        self.mod_search_status.set(f"Installiere {project.get('title', 'Mod')} samt erforderlichen Abhängigkeiten …")
+        def work():
+            try:
+                names = install_mod(project["project_id"], version, loader, mods_dir,
+                                    lambda msg: self.window.after(0, lambda: self.mod_search_status.set(msg)))
+                self.window.after(0, lambda: self._modrinth_installed(names))
+            except Exception as exc:
+                self.window.after(0, lambda error=str(exc): self.mod_search_status.set(f"Installation fehlgeschlagen: {error}"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _modrinth_installed(self, names):
+        self.refresh_mods()
+        self.mod_search_status.set(f"Installiert: {', '.join(names)}" if names else "Mod und erforderliche Abhängigkeiten sind bereits installiert.")
+        self.status_var.set("Modrinth-Installation abgeschlossen")
 
     def page_modpacks(self):
         self.heading("Modpacks", "Importiere Modrinth .mrpack-Dateien in getrennte Instanzen.")
@@ -249,6 +393,8 @@ class LauncherApp:
         self.manifest = manifest
         if self.current_page == "Versions":
             self._filter_versions()
+        if self.current_page == "Mods":
+            self._refresh_mod_versions()
         self._refresh_home_choices()
         self.status_var.set(f"{len(manifest.get('versions', []))} offizielle Versionen geladen")
 
@@ -385,11 +531,15 @@ class LauncherApp:
     def _refresh_mod_versions(self):
         if not hasattr(self, "mods_version") or not self.mods_version.winfo_exists():
             return
-        vals = [p.name for p in (self.mc_root / "instances").iterdir() if p.is_dir()] if (self.mc_root / "instances").exists() else []
+        vals = [v["id"] for v in self.manifest.get("versions", [])]
+        current = self.mods_version.get()
         self.mods_version["values"] = vals
-        if vals:
-            self.mods_version.set(vals[0])
-            self.refresh_mods()
+        if current in vals:
+            self.mods_version.set(current)
+        elif vals:
+            selected = self._selected_version_id()
+            self.mods_version.set(selected if selected in vals else vals[0])
+        self.refresh_mods()
 
     def refresh_mods(self):
         self.mods_list.delete(0, "end")
@@ -542,10 +692,18 @@ class LauncherApp:
 
 def main():
     log_file = default_root() / "logs" / "launcher.log"
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(level=logging.INFO, filename=str(log_file),
-                        format="%(asctime)s %(levelname)s %(message)s")
-    root = tk.Tk()
-    LauncherApp(root)
-    root.mainloop()
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(level=logging.INFO, filename=str(log_file),
+                            format="%(asctime)s %(levelname)s %(message)s")
+    except OSError:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    try:
+        root = tk.Tk()
+        LauncherApp(root)
+        root.mainloop()
+    except tk.TclError as exc:
+        logging.warning("Tkinter runtime unavailable; starting browser UI: %s", exc)
+        from .webui import run_webui
+        run_webui()
 
