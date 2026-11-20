@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import threading
-import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -29,6 +28,11 @@ async function installMod(project,title){let version=document.getElementById('mo
 
 
 def run_webui() -> None:
+    try:
+        import webview
+    except ImportError as exc:
+        raise RuntimeError("Das eingebettete Fenster benötigt pywebview. Starte start.bat, um es einzurichten.") from exc
+
     config_path = Path.home() / ".block-launcher" / "settings.json"
     config = read_json(config_path, {})
     state = {"status": "Bereit", "error": None}
@@ -194,10 +198,10 @@ def run_webui() -> None:
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
-    print(f"Block Launcher läuft im Browser: {url}")
-    webbrowser.open(url)
     try:
-        threading.Event().wait()
-    except KeyboardInterrupt:
+        webview.create_window("Block Launcher", url, width=1180, height=800, min_size=(760, 540))
+        webview.start()
+    finally:
         server.shutdown()
+        server.server_close()
 

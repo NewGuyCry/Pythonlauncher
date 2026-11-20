@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 import threading
 from pathlib import Path
 
@@ -167,6 +168,7 @@ class LauncherApp:
         self.home_profile.bind("<<ComboboxSelected>>", lambda _: self._profile_changed(self.home_profile.get()))
         self.play_button = ttk.Button(row, text="▶  SPIELEN", style="Accent.TButton", command=self.launch_game)
         self.play_button.pack(side="right")
+        self.launch_progress = ttk.Progressbar(hero, mode="indeterminate", length=220)
         self.home_status = ttk.Label(hero, text="Versionen werden geladen …", style="PanelMuted.TLabel")
         self.home_status.pack(anchor="w", pady=(14, 0))
         cards = ttk.Frame(self.content)
@@ -477,21 +479,44 @@ class LauncherApp:
             return
         if not self.mc.is_installed(version_id):
             if messagebox.askyesno("Installation erforderlich", f"Minecraft {version_id} ist noch nicht installiert. Jetzt installieren?"):
-                self._run_background(lambda: self.mc.install(version_id, self._set_status), "Installation abgeschlossen. Du kannst jetzt auf Spielen klicken.")
+                self._run_background(lambda: self.mc.install(version_id, self._set_status),
+                                     "Installation abgeschlossen. Du kannst jetzt auf Spielen klicken.",
+                                     f"Lade Minecraft {version_id} herunter …")
+            return
+        if self.proc and self.proc.poll() is None:
+            messagebox.showinfo("Spiel läuft", "Minecraft läuft bereits.")
             return
         profile = self.selected_profile
         ram = int(self.config.get("ram_gb", self.ram))
         java = self.config.get("java_path") or None
-        try:
-            if self.proc and self.proc.poll() is None:
-                messagebox.showinfo("Spiel läuft", "Minecraft läuft bereits.")
-                return
-            game_dir = self.mc_root / "instances" / version_id
-            self.proc = self.mc.launch(version_id, profile, ram, java, game_dir)
-            self._set_status(f"Minecraft {version_id} gestartet als {profile}")
-            self.window.after(3000, self._poll_game)
-        except Exception as exc:
-            self._show_error(str(exc))
+        game_dir = self.mc_root / "instances" / version_id
+        self.play_button.configure(state="disabled", text="WIRD GESTARTET …")
+        self.launch_progress.pack(fill="x", pady=(14, 0))
+        self.launch_progress.start(12)
+        self._set_status(f"Starte Minecraft {version_id} für {profile} … Java wird geprüft und das Spiel lädt.")
+
+        def work():
+            try:
+                proc = self.mc.launch(version_id, profile, ram, java, game_dir)
+                self.proc = proc
+                self.window.after(0, lambda: self._launch_started(version_id, profile))
+            except Exception as exc:
+                self.window.after(0, lambda error=str(exc): self._launch_failed(error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _launch_started(self, version_id, profile):
+        self.launch_progress.stop()
+        self.launch_progress.pack_forget()
+        self.play_button.configure(state="normal", text="▶  SPIELEN")
+        self._set_status(f"Minecraft {version_id} wurde gestartet. Das Spiel lädt jetzt …")
+        self.window.after(1200, self._poll_game)
+
+    def _launch_failed(self, error):
+        self.launch_progress.stop()
+        self.launch_progress.pack_forget()
+        self.play_button.configure(state="normal", text="▶  SPIELEN")
+        self._show_error(error)
 
     def add_profile(self):
         name = self._prompt("Neues Offline-Profil", "Spielername (3–16 Zeichen, Buchstaben/Ziffern/_):")
@@ -674,8 +699,8 @@ class LauncherApp:
         dialog.wait_window()
         return result["value"]
 
-    def _run_background(self, task, success):
-        self._set_status("Arbeite …")
+    def _run_background(self, task, success, starting="Arbeite …"):
+        self._set_status(starting)
         def work():
             try:
                 task()
@@ -723,9 +748,28 @@ def main():
                             format="%(asctime)s %(levelname)s %(message)s")
     except OSError:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    # Use the responsive web interface as the desktop UI on every platform.
-    # This avoids falling back to a cramped native Tk layout on systems where
-    # Tcl/Tk exists but its widgets render differently or the runtime is partial.
-    from .webui import run_webui
-    run_webui()
+    if "--browser" in sys.argv[1:]:
+        from .webui import run_webui
+        run_webui()
+        return
+    if tk is None:
+        message = "Tkinter ist in dieser Python-Installation nicht installiert. Installiere Python erneut mit Tcl/Tk-Unterstützung."
+        logging.error(message)
+        print(message, file=sys.stderr)
+        return
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        message = ("Das native Launcher-Fenster konnte nicht geöffnet werden, weil die Tcl/Tk-Dateien deiner "
+                   "Python-Installation fehlen oder defekt sind. Repariere Python über den Installer und aktiviere "
+                   "‘tcl/tk and IDLE’; danach start.bat erneut öffnen.\n\n" + str(exc))
+        logging.exception("Tkinter konnte das Hauptfenster nicht erstellen")
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, message, "Block Launcher – Tkinter fehlt", 0x10)
+        except Exception:
+            print(message, file=sys.stderr)
+        return
+    LauncherApp(root)
+    root.mainloop()
 

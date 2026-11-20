@@ -10,7 +10,7 @@ Ein schlanker Minecraft-Java-Launcher in Python mit dunkler Desktop-Oberfläche.
 
 ## Start unter Windows
 
-`start.bat` doppelklicken oder im Projektordner ausführen:
+`start.bat` doppelklicken, um die moderne Oberfläche in einem eigenen Python-Fenster zu öffnen. Beim ersten Start richtet die Datei dafür `pywebview` ein. Für das native Tkinter-Fenster kannst du im Projektordner direkt Folgendes ausführen:
 
 ```powershell
 python main.py
@@ -39,7 +39,8 @@ block-launcher
 - Modrinth-Suche nach Minecraft-Version und Fabric/Quilt mit Ein-Klick-Installation passender Mods und erforderlicher Abhängigkeiten
 - automatische Einrichtung des passenden Fabric-/Quilt-Startprofils; installierte Mods starten über dieses Profil
 - SHA-1/SHA-512-Prüfung von Modrinth-Dateien sowie lokale JAR-Verwaltung in `instances/<version>/mods`
-- responsive, animierte Browser-Desktop-Oberfläche mit kompakter Navigation auf kleinen Fenstern
+- responsive Oberfläche in einem eingebetteten WebView-Fenster mit kompakter Navigation auf kleinen Fenstern
+- sichtbarer Startstatus und Ladebalken, während Minecraft im Hintergrund startet
 - Import und Export von Modrinth-`.mrpack`-Archiven mit Overrides
 - Spielausgabe in `logs/latest-game.log`
 
@@ -53,10 +54,10 @@ Offline-Profile melden sich nicht bei Microsoft an und eignen sich nur für Einz
 
 ```text
 mc_launcher/
-  app.py       Programmeinstieg und Tkinter-Kompatibilität
+  app.py       Tkinter-Desktop-Oberfläche und Programmeinstieg
   core.py      Mojang-Metadaten, Downloads, Java und Startprozess
   modrinth.py  Modrinth-Suche, Kompatibilitätsfilter und Mod-Downloads
   packs.py     Modrinth-Archiv Import/Export
-  webui.py     Responsive Browser-Desktop-Oberfläche
+  webui.py     Oberfläche und eingebettetes WebView-Fenster
 main.py        Programmeinstieg
 ```

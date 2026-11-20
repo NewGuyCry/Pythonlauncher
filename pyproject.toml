@@ -7,7 +7,7 @@ name = "block-launcher"
 version = "0.1.0"
 description = "A lightweight Minecraft Java launcher written in Python"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["pywebview>=5.0"]
 
 [project.scripts]
 block-launcher = "mc_launcher.app:main"
