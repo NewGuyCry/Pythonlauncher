@@ -38,7 +38,7 @@ class LauncherApp:
         self.manifest = {"versions": []}
         self.proc = None
         self.current_page = "Home"
-        self.window.title("Block Launcher")
+        self.window.title("PY MC launcher Ver. 0.2")
         self.window.geometry("1120x740")
         self.window.minsize(760, 540)
         self.window.configure(bg=BG)
@@ -73,9 +73,9 @@ class LauncherApp:
         self.nav = tk.Frame(self.window, bg="#0c1015", width=190)
         self.nav.pack(side="left", fill="y")
         self.nav.pack_propagate(False)
-        self.brand = tk.Label(self.nav, text="⬢  BLOCK", bg="#0c1015", fg=GREEN, font=("Segoe UI", 16, "bold"))
+        self.brand = tk.Label(self.nav, text="---", bg="#0c1015", fg=GREEN, font=("Segoe UI", 16, "bold"))
         self.brand.pack(anchor="w", padx=18, pady=(25, 4))
-        self.nav_subtitle = tk.Label(self.nav, text="MINECRAFT JAVA", bg="#0c1015", fg=MUTED, font=("Segoe UI", 8, "bold"))
+        self.nav_subtitle = tk.Label(self.nav, text="Made by NewGuyCry", bg="#0c1015", fg=MUTED, font=("Segoe UI", 8, "bold"))
         self.nav_subtitle.pack(anchor="w", padx=20, pady=(0, 22))
         self.nav_buttons = {}
         self.nav_labels = {"Home": "⌂  Home", "Versions": "◷  Versionen", "Mods": "✦  Mods", "Modpacks": "▣  Modpacks", "Accounts": "♙  Profile", "Settings": "⚙  Einstellungen"}
@@ -508,14 +508,14 @@ class LauncherApp:
     def _launch_started(self, version_id, profile):
         self.launch_progress.stop()
         self.launch_progress.pack_forget()
-        self.play_button.configure(state="normal", text="▶  SPIELEN")
+        self.play_button.configure(state="normal", text="▶  STARTET...")
         self._set_status(f"Minecraft {version_id} wurde gestartet. Das Spiel lädt jetzt …")
         self.window.after(1200, self._poll_game)
 
     def _launch_failed(self, error):
         self.launch_progress.stop()
         self.launch_progress.pack_forget()
-        self.play_button.configure(state="normal", text="▶  SPIELEN")
+        self.play_button.configure(state="normal", text="▶  FAILED")
         self._show_error(error)
 
     def add_profile(self):

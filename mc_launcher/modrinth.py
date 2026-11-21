@@ -1,4 +1,3 @@
-"""Public Modrinth API v2 search and compatible mod installation."""
 from __future__ import annotations
 
 import json

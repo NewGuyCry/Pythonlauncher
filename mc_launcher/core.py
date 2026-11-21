@@ -29,9 +29,6 @@ _DOWNLOAD_LOCKS_GUARD = threading.Lock()
 def default_root() -> Path:
     if sys.platform == "win32":
         return Path(os.environ.get("APPDATA", Path.home())) / ".minecraft" / "PythonLauncher"
-    if sys.platform == "darwin":
-        return Path.home() / "Library/Application Support/minecraft"
-    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "minecraft"
 
 
 def read_json(path: Path, fallback: Any) -> Any:
