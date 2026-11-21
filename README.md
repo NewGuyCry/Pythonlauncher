@@ -1,4 +1,4 @@
-# Block Launcher
+# Vibecoded Minecraft Launcher written in Python
 
 A Minecraft: Java Edition launcher written in Python. The Windows launcher opens a responsive desktop window with an embedded web interface; it does not open a separate browser.
 
@@ -8,7 +8,7 @@ A Minecraft: Java Edition launcher written in Python. The Windows launcher opens
 
 ### Features
 
-- Browse Mojang releases, snapshots, and older Java Edition versions.
+- Browse Mojang releases, snapshots, and older Java Edition versions(currently not all versions supported).
 - Install Minecraft files and launch installed versions.
 - Manage local offline player profiles.
 - Search Modrinth for mods compatible with a selected Minecraft version and Fabric or Quilt.
@@ -81,7 +81,7 @@ Player profiles are offline profiles. Microsoft account authentication and onlin
 
 ### Funktionen
 
-- Mojang-Versionen durchsuchen: Releases, Snapshots und ältere Java-Edition-Versionen.
+- Mojang-Versionen durchsuchen: Releases, Snapshots und ältere Java-Edition-Versionen(zurzeit nicht alle versionen unterstützt).
 - Minecraft-Dateien installieren und installierte Versionen starten.
 - Lokale Offline-Spielerprofile verwalten.
 - Modrinth nach Mods für eine ausgewählte Minecraft-Version sowie Fabric oder Quilt durchsuchen.
